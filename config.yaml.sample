@@ -1,0 +1,5 @@
+caldav_url: <Calendar Collection URL of your CalDAV Server>
+#caldav_url: caldav_url: https://www.google.com/calendar/dav/<calid>/events/
+caldav_user: <username>
+#caldav_user: <user>@gmail.com
+caldav_passwd: <password>

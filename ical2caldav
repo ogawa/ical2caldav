@@ -1,0 +1,118 @@
+#!/usr/bin/perl
+# ical2caldav: Transfer an iCalendar file to a CalDAV server
+#
+# $Id$
+
+use strict;
+use lib 'lib';
+
+use Data::ICal;
+use Pod::Usage;
+use Getopt::Long;
+
+our $VERSION = '0.01';
+
+*Data::ICal::Property::_value_as_string = sub {
+    my $self  = shift;
+    my $key   = shift;
+    my $value = defined( $self->value() ) ? $self->value() : '';
+
+    unless ( $self->vcal10 ) {
+        my $lc_key = lc($key);
+        $value =~ s/\\/\\/gs;
+        $value =~ s/\Q;/\\;/gs
+          unless ( $lc_key eq 'rrule' || $lc_key eq 'exdate' );
+        $value =~ s/,/\\,/gs
+          unless ( $lc_key eq 'rrule' || $lc_key eq 'exdate' );
+        $value =~ s/\n/\\n/gs;
+        $value =~ s/\\N/\\N/gs;
+    }
+
+    return $value;
+
+};
+
+sub read_yaml {
+    my $file = shift;
+    my $yaml;
+    if ( eval('require YAML::Tiny') ) {
+        ($yaml) = YAML::Tiny::LoadFile($file);
+    }
+    elsif ( eval('require YAML') ) {
+        ($yaml) = YAML::LoadFile($file);
+    }
+    if ($@) {
+        die "Faild to read yaml file: $@";
+    }
+    $yaml;
+}
+
+my %opt = ( conf => 'config.yaml', );
+GetOptions( \%opt, 'filename=s', 'conf=s', 'help' ) or pod2usage(2);
+pod2usage(1) if $opt{help};
+
+my $ical = Data::ICal->new;
+if ( $opt{filename} ) {
+    $ical->parse( filename => $opt{filename} )
+      or die 'wrong iCalendar file';
+}
+else {
+    $ical->parse( data => join( '', <> ) )
+      or die 'wrong iCalendar file';
+}
+
+my @event_entries;
+my @common_entries;
+for my $entry ( @{ $ical->{entries} } ) {
+    if ( $entry->isa('Data::ICal::Entry::Event') ) {
+        push @event_entries, $entry;
+    }
+    else {
+        push @common_entries, $entry;
+    }
+}
+
+my %caldav_entries;
+for my $event (@event_entries) {
+    my $uid_prop = $event->properties->{uid}->[0]
+      or next;
+    my $uid = $uid_prop->value
+      or next;
+    $ical->{entries} = [ $event, @common_entries ];
+    $caldav_entries{$uid} = $ical->as_string;
+}
+
+my $cfg = read_yaml( $opt{conf} );
+unless ( $cfg->{caldav_url} ) {
+    print STDERR
+      "Require caldav_url (Calendar Collection URL of your CalDAV server)\n";
+    exit(1);
+}
+
+use LWP::UserAgent;
+use HTTP::Request;
+
+my $ua = LWP::UserAgent->new;
+$ua->agent("ical2caldav/$VERSION");
+
+my $req = HTTP::Request->new;
+$req->method('PUT');
+$req->header( 'If-None-Match' => '*' );
+$req->header( 'Content-Type'  => 'text/calendar' );
+$req->authorization_basic( $cfg->{caldav_user}, $cfg->{caldav_passwd} || '' )
+  if $cfg->{caldav_user};
+
+for my $uid ( keys %caldav_entries ) {
+    $req->uri( $cfg->{caldav_url} . $uid );
+    my $entry = $caldav_entries{$uid};
+    $req->content_length( length $entry );
+    $req->content($entry);
+    my $res = $ua->request($req);
+    if ($res->is_success) {
+	print "$uid is stored\n";
+    } else {
+	print "$uid is not stored: " . $res->status_line . "\n";
+    }
+}
+
+1;
